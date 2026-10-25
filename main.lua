@@ -322,40 +322,56 @@ function NonogramBoard:isCellConflict(row, col)
     return self:_isActualConflict(row, col)
 end
 
-function NonogramBoard:isRowSatisfied(row)
-    if not self.current then
+local function userLineRuns(get_state, length)
+    local runs = {}
+    local run = 0
+    for i = 1, length do
+        if get_state(i) == 1 then
+            run = run + 1
+        elseif run > 0 then
+            runs[#runs + 1] = run
+            run = 0
+        end
+    end
+    if run > 0 then
+        runs[#runs + 1] = run
+    end
+    if #runs == 0 then
+        runs[1] = 0
+    end
+    return runs
+end
+
+local function runsEqual(a, b)
+    if not a or not b or #a ~= #b then
         return false
     end
-    for col = 1, self:getColCount() do
-        local solution = self.current.solution[row][col]
-        local state = self.user_grid[row][col]
-        if solution then
-            if state ~= 1 then
-                return false
-            end
-        elseif state == 1 then
+    for i = 1, #a do
+        if a[i] ~= b[i] then
             return false
         end
     end
     return true
 end
 
+function NonogramBoard:isRowSatisfied(row)
+    if not self.current then
+        return false
+    end
+    local runs = userLineRuns(function(col)
+        return self.user_grid[row][col]
+    end, self:getColCount())
+    return runsEqual(runs, self.current.row_hints[row])
+end
+
 function NonogramBoard:isColSatisfied(col)
     if not self.current then
         return false
     end
-    for row = 1, self:getRowCount() do
-        local solution = self.current.solution[row][col]
-        local state = self.user_grid[row][col]
-        if solution then
-            if state ~= 1 then
-                return false
-            end
-        elseif state == 1 then
-            return false
-        end
-    end
-    return true
+    local runs = userLineRuns(function(row)
+        return self.user_grid[row][col]
+    end, self:getRowCount())
+    return runsEqual(runs, self.current.col_hints[col])
 end
 
 function NonogramBoard:applyAction(action)
@@ -433,16 +449,13 @@ function NonogramBoard:isSolved()
         return false
     end
     for r = 1, self:getRowCount() do
-        for c = 1, self:getColCount() do
-            local solution = self.current.solution[r][c]
-            local state = self.user_grid[r][c]
-            if solution then
-                if state ~= 1 then
-                    return false
-                end
-            elseif state == 1 then
-                return false
-            end
+        if not self:isRowSatisfied(r) then
+            return false
+        end
+    end
+    for c = 1, self:getColCount() do
+        if not self:isColSatisfied(c) then
+            return false
         end
     end
     return true
@@ -690,7 +703,9 @@ local function drawCenteredText(bb, x, y, w, h, face, text, color)
     RenderText:renderUtf8Text(bb, text_x, baseline, face, text, true, false, color)
 end
 
-local function paintLineFallback(bb, x0, y0, x1, y1, color)
+local function paintLineFallback(bb, x0, y0, x1, y1, color, thickness)
+    thickness = thickness or 1
+    local shift = -math.floor(thickness / 2)
     x0 = math.floor(x0 + 0.5)
     y0 = math.floor(y0 + 0.5)
     x1 = math.floor(x1 + 0.5)
@@ -701,7 +716,7 @@ local function paintLineFallback(bb, x0, y0, x1, y1, color)
     local sy = y0 < y1 and 1 or -1
     local err = dx + dy
     while true do
-        bb:paintRect(x0, y0, 1, 1, color)
+        bb:paintRect(x0 + shift, y0 + shift, thickness, thickness, color)
         if x0 == x1 and y0 == y1 then
             break
         end
@@ -717,18 +732,35 @@ local function paintLineFallback(bb, x0, y0, x1, y1, color)
     end
 end
 
+local function paintCross(bb, cell_x, cell_y, cell, color)
+    local padding = math.floor(cell * 0.22)
+    local thickness = math.max(2, math.floor(cell / 12))
+    paintLineFallback(bb,
+        cell_x + padding,
+        cell_y + padding,
+        cell_x + cell - padding,
+        cell_y + cell - padding,
+        color, thickness)
+    paintLineFallback(bb,
+        cell_x + padding,
+        cell_y + cell - padding,
+        cell_x + cell - padding,
+        cell_y + padding,
+        color, thickness)
+end
+
 function NonogramBoardWidget:paintHints(bb, x, y)
     local cell = self.cell_size
     local grid_x = x + self.left_hint_cols * cell
     local grid_y = y + self.top_hint_rows * cell
-    local highlight = self.board:areHintsHighlighted()
+    local done_bg = Blitbuffer.COLOR_GRAY_D
 
     for row = 1, self.board:getRowCount() do
         local hints = self.board:getRowHints(row)
         local start_x = grid_x - self.left_hint_cols * cell
         local row_y = grid_y + (row - 1) * cell
-        if highlight and self.board:isRowSatisfied(row) then
-            bb:paintRect(start_x, row_y, self.left_hint_cols * cell, cell, Blitbuffer.COLOR_GRAY_D)
+        if self.board:isRowSatisfied(row) then
+            bb:paintRect(start_x, row_y, self.left_hint_cols * cell, cell, done_bg)
         end
         local offset = self.left_hint_cols - #hints
         for idx, value in ipairs(hints) do
@@ -741,8 +773,8 @@ function NonogramBoardWidget:paintHints(bb, x, y)
         local hints = self.board:getColHints(col)
         local start_y = grid_y - self.top_hint_rows * cell
         local col_x = grid_x + (col - 1) * cell
-        if highlight and self.board:isColSatisfied(col) then
-            bb:paintRect(col_x, start_y, cell, self.top_hint_rows * cell, Blitbuffer.COLOR_GRAY_D)
+        if self.board:isColSatisfied(col) then
+            bb:paintRect(col_x, start_y, cell, self.top_hint_rows * cell, done_bg)
         end
         local offset = self.top_hint_rows - #hints
         for idx, value in ipairs(hints) do
@@ -773,41 +805,17 @@ function NonogramBoardWidget:paintGrid(bb, x, y)
             end
             local value
             if self.board:isShowingSolution() then
-                value = self.board.current.solution[row][col] and 1 or 0
+                value = self.board.current.solution[row][col] and 1 or -1
             else
                 value = self.board.user_grid[row][col]
             end
             if value == 1 then
                 bb:paintRect(cell_x + 2, cell_y + 2, cell - 4, cell - 4, Blitbuffer.COLOR_BLACK)
                 if incorrect[row] and incorrect[row][col] then
-                    local padding = math.floor(cell * 0.2)
-                    paintLineFallback(bb,
-                        cell_x + padding,
-                        cell_y + padding,
-                        cell_x + cell - padding,
-                        cell_y + cell - padding,
-                        Blitbuffer.COLOR_WHITE)
-                    paintLineFallback(bb,
-                        cell_x + padding,
-                        cell_y + cell - padding,
-                        cell_x + cell - padding,
-                        cell_y + padding,
-                        Blitbuffer.COLOR_WHITE)
+                    paintCross(bb, cell_x, cell_y, cell, Blitbuffer.COLOR_WHITE)
                 end
             elseif value == 0 then
-                local padding = math.floor(cell * 0.2)
-                paintLineFallback(bb,
-                    cell_x + padding,
-                    cell_y + padding,
-                    cell_x + cell - padding,
-                    cell_y + cell - padding,
-                    Blitbuffer.COLOR_GRAY_2 or Blitbuffer.COLOR_GRAY_4)
-                paintLineFallback(bb,
-                    cell_x + padding,
-                    cell_y + cell - padding,
-                    cell_x + cell - padding,
-                    cell_y + padding,
-                    Blitbuffer.COLOR_GRAY_2 or Blitbuffer.COLOR_GRAY_4)
+                paintCross(bb, cell_x, cell_y, cell, Blitbuffer.COLOR_BLACK)
             end
         end
     end
@@ -903,8 +911,6 @@ function NonogramScreen:buildLayout()
                     text = _("Close"),
                     callback = function()
                         self:onClose()
-                        UIManager:close(self)
-                        UIManager:setDirty(nil, "full")
                     end,
                 },
             },
@@ -1155,6 +1161,12 @@ function NonogramScreen:updateSolutionButton()
 end
 
 function NonogramScreen:onClose()
+    UIManager:close(self)
+    UIManager:setDirty(nil, "full")
+    return true
+end
+
+function NonogramScreen:onCloseWidget()
     self.plugin:saveState()
     self.plugin:onScreenClosed()
 end
